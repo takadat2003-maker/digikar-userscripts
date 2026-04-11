@@ -5,8 +5,8 @@
 // @description  診察順ナビ 上位表示パネル版。NAV/SORT切替、移動・最小化可。受付メモに🔴緊急対応群があるときは無条件に1位。
 // @match        https://digikar.jp/reception/*
 // @match        https://*.digikar.jp/reception/*
-// @updateURL    https://raw.githubusercontent.com/あなたのGitHubID/digikar-userscripts/main/reservation-priority-system.user.js
-// @downloadURL  https://raw.githubusercontent.com/あなたのGitHubID/digikar-userscripts/main/reservation-priority-system.user.js
+// @updateURL    https://raw.githubusercontent.com/takadat2003-maker/digikar-userscripts/main/reservation-priority-system.user.js
+// @downloadURL  https://raw.githubusercontent.com/takadat2003-maker/digikar-userscripts/main/reservation-priority-system.user.js
 // @grant        none
 // ==/UserScript==
 
