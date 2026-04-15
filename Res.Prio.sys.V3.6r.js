@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Res.Prio.sys.V3.6r
+// @name         Res.Prio.sys.V3.6rrr
 // @namespace    https://digikar.jp/reception/
 // @version      3.6rrr
 // @description  診察順ナビ V3.6系安定版。再帰群は受付メモタグと現在状態で判定し、パネル内で件数集計。
