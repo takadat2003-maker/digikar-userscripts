@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Res.Prio.sys.V3.8 lightweight clever pause
+// @name         Res.Prio.sys.V3.8 lightweight clever pause2
 // @namespace    https://digikar.jp/reception/
 // @version      3.8.0
 // @description  診察順ナビ 上位表示パネル版。初回ロード安定化、差分描画でチカつき軽減、診察中を最上位表示。Bridge V1連携を維持しつつ、MutationObserver主体の軽量更新とclever pauseを追加。
