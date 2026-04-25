@@ -738,6 +738,7 @@
       statusText,
       reservationText,
       receptionMemoText,
+      hasReturnMemoText: String(receptionMemoText || '').includes('再帰あり'),
       patientMemoText,
       currentWaitMs,
       totalWaitMs,
@@ -792,6 +793,10 @@
     const reservedStr = item.reservationText && item.reservationText !== '-' ? item.reservationText : '予約外';
     const currentWaitStr = formatDuration(item.currentWaitMs);
     const totalWaitStr = formatDuration(item.totalWaitMs);
+    const currentWaitHtml = item.hasReturnMemoText
+      ? `⌚今回待${escapeHtml(currentWaitStr)}`
+      : '';
+    const totalWaitHtml = `<span style="${item.hasReturnMemoText ? 'margin-left:8px;' : ''}color:#7c3aed;">⌚総待ち${escapeHtml(totalWaitStr)}</span>`;
     const situation = escapeHtml(item.situationText || '');
     const rankLabel = item.isUrgentTop ? '緊急1位' : `診察順${rank}位`;
     const scoreLabel = item.isUrgentTop ? '無条件最優先' : `${escapeHtml(formatScore(item.score))}点`;
@@ -802,8 +807,9 @@
         `<span style="color:${rankColor};font-weight:900;font-size:13px;">${scoreLabel}</span>` +
         `<span style="color:${item.situationColor};font-weight:800;">ー${situation}ー</span>` +
       `</div>` +
-      `<div style="margin-top:2px;font-weight:700;color:#dc2626;">⌚今回待${escapeHtml(currentWaitStr)}` +
-      `<span style="margin-left:8px;color:#7c3aed;">⌚総待ち${escapeHtml(totalWaitStr)}</span>` +
+      `<div style="margin-top:2px;font-weight:700;color:#dc2626;">` +
+      currentWaitHtml +
+      totalWaitHtml +
       `<span style="margin-left:8px;color:#111827;">予${escapeHtml(reservedStr)}</span></div>`;
 
     const title =
@@ -820,6 +826,7 @@
       item.isUrgentTop ? '1' : '0',
       formatDuration(item.currentWaitMs),
       formatDuration(item.totalWaitMs),
+      item.hasReturnMemoText ? 'returnMemoText=1' : 'returnMemoText=0',
       reservedStr,
       formatScore(item.score),
       item.situationText,
