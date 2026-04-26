@@ -1,12 +1,11 @@
 // ==UserScript==
-// @name         Reservation priority system V3.3.1 urgent-top
+// @name         Res.Prio.sys.V3.8.2
 // @namespace    https://digikar.jp/reception/
-// @version      3.3.1
-// @description  診察順ナビ 上位表示パネル版。NAV/SORT切替、移動・最小化可。受付メモに🔴緊急対応群があるときは無条件に1位。
+// @version      3.8.2
+// @description  診察順ナビ 上位表示パネル版。【V3.8.2】受付画面のちらつき対策(差分ソート/操作中スキップ/Observerループ防止/フォーカス＆スクロール保持)。Bridge V1 互換。
 // @match        https://digikar.jp/reception/*
 // @match        https://*.digikar.jp/reception/*
-// @updateURL    https://raw.githubusercontent.com/takadat2003-maker/digikar-userscripts/main/reservation-priority-system.user.js
-// @downloadURL  https://raw.githubusercontent.com/takadat2003-maker/digikar-userscripts/main/reservation-priority-system.user.js
+// @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
@@ -16,17 +15,24 @@
   const CONFIG = {
     refreshIntervalMs: 1000,
     tableScanDebounceMs: 200,
-    renderClass: 'tm-priority-score-block-v33',
+    initialRetryIntervalMs: 300,
+    initialRetryMax: 30,
+    // V3.8.2: ユーザー操作直後はソートを延期する猶予時間(ms)
+    userActivityIdleMs: 700,
+    // V3.8.2: 操作中で延期したソートを再試行する間隔(ms)
+    deferredSortRetryMs: 250,
+    renderClass: 'tm-priority-score-block-v36',
 
-    storagePrefixBase: 'tmPriorityStateV33::',
+    storagePrefixBase: 'tmPriorityStateV36::',
     staleStateTtlMs: 6 * 60 * 60 * 1000,
     globalGcIntervalMs: 10 * 60 * 1000,
 
-    uiStorageKey: 'tmPriorityUiStateV33',
-    panelId: 'tm-priority-floating-panel-v33',
+    uiStorageKey: 'tmPriorityUiStateV36',
+    panelId: 'tm-priority-floating-panel-v36',
     panelTopN: 8,
 
     urgentTopTag: '🔴緊急対応群',
+    bridgeStorageKey: 'tmBridgeAutopilotFeedV1',
 
     headers: {
       reservation: '予約',
@@ -436,6 +442,39 @@
     return el;
   }
 
+  function updateRenderElement(el, html, title, stylePatch, signature) {
+    if (!el) return;
+    const sig = String(signature || '');
+
+    if (el.dataset.renderSignature !== sig) {
+      el.innerHTML = html;
+      el.dataset.renderSignature = sig;
+    }
+
+    if (el.title !== title) {
+      el.title = title;
+    }
+
+    if (stylePatch) {
+      if (el.dataset.color !== String(stylePatch.color || '')) {
+        el.style.color = stylePatch.color || '';
+        el.dataset.color = String(stylePatch.color || '');
+      }
+      if (el.dataset.fontWeight !== String(stylePatch.fontWeight || '')) {
+        el.style.fontWeight = stylePatch.fontWeight || '';
+        el.dataset.fontWeight = String(stylePatch.fontWeight || '');
+      }
+      if (el.dataset.borderColor !== String(stylePatch.borderColor || '')) {
+        el.style.borderColor = stylePatch.borderColor || '';
+        el.dataset.borderColor = String(stylePatch.borderColor || '');
+      }
+      if (el.dataset.background !== String(stylePatch.background || '')) {
+        el.style.background = stylePatch.background || '';
+        el.dataset.background = String(stylePatch.background || '');
+      }
+    }
+  }
+
   function clearAllOldRenders(table, cols) {
     if (!table) return;
     table.querySelectorAll('tbody tr').forEach(row => {
@@ -602,7 +641,8 @@
         doctorText,
         statusText,
         situationText,
-        situationColor
+        situationColor,
+        receptionMemoText
       };
     }
 
@@ -703,6 +743,7 @@
       reservationText,
       receptionMemoText,
       hasReturnMemoText: String(receptionMemoText || '').includes('再帰あり'),
+      patientMemoText,
       currentWaitMs,
       totalWaitMs,
       score: totalScore,
@@ -764,12 +805,7 @@
     const rankLabel = item.isUrgentTop ? '緊急1位' : `診察順${rank}位`;
     const scoreLabel = item.isUrgentTop ? '無条件最優先' : `${escapeHtml(formatScore(item.score))}点`;
 
-    el.style.color = '#111827';
-    el.style.fontWeight = '700';
-    el.style.borderColor = rankColor;
-    el.style.background = item.isUrgentTop ? CONFIG.colors.urgentTopBg : CONFIG.colors.waitingBg;
-
-    el.innerHTML =
+    const html =
       `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">` +
         `<span style="display:inline-block;padding:1px 6px;border-radius:999px;background:${rankBadgeBg};color:${rankColor};font-weight:900;font-size:13px;letter-spacing:0.2px;">${escapeHtml(rankLabel)}</span>` +
         `<span style="color:${rankColor};font-weight:900;font-size:13px;">${scoreLabel}</span>` +
@@ -780,30 +816,78 @@
       totalWaitHtml +
       `<span style="margin-left:8px;color:#111827;">予${escapeHtml(reservedStr)}</span></div>`;
 
-    el.title =
+    const title =
       `${item.detailText}\n` +
       `状態:${item.statusText}\n` +
       `診療科:${item.departmentText}\n` +
       `医師:${item.doctorText}` +
       (item.situationText ? `\n状況:${item.situationText}` : '') +
       (item.receptionMemoText ? `\n受付メモ:${item.receptionMemoText}` : '');
+
+    const signature = [
+      'waiting',
+      rank,
+      item.isUrgentTop ? '1' : '0',
+      formatDuration(item.currentWaitMs),
+      formatDuration(item.totalWaitMs),
+      item.hasReturnMemoText ? 'returnMemoText=1' : 'returnMemoText=0',
+      reservedStr,
+      formatScore(item.score),
+      item.situationText,
+      item.situationColor,
+      item.statusText,
+      item.departmentText,
+      item.doctorText,
+      item.detailText,
+      item.receptionMemoText
+    ].join('|');
+
+    updateRenderElement(
+      el,
+      html,
+      title,
+      {
+        color: '#111827',
+        fontWeight: '700',
+        borderColor: rankColor,
+        background: item.isUrgentTop ? CONFIG.colors.urgentTopBg : CONFIG.colors.waitingBg
+      },
+      signature
+    );
   }
 
   function renderExaminingRow(item) {
     const el = ensureRender(item.displayCell);
     const text = escapeHtml(item.situationText || '診察中');
+    const html = `<div style="color:${item.situationColor};font-weight:800;">ー${text}ー</div>`;
 
-    el.style.color = item.situationColor;
-    el.style.fontWeight = '800';
-    el.style.borderColor = item.situationColor;
-    el.style.background = CONFIG.colors.activeBg;
-    el.innerHTML = `<div style="color:${item.situationColor};font-weight:800;">ー${text}ー</div>`;
-
-    el.title =
+    const title =
       `状態:${item.statusText}\n` +
       `診療科:${item.departmentText}\n` +
       `医師:${item.doctorText}` +
       (item.situationText ? `\n状況:${item.situationText}` : '');
+
+    const signature = [
+      'examining',
+      item.statusText,
+      item.departmentText,
+      item.doctorText,
+      item.situationText,
+      item.situationColor
+    ].join('|');
+
+    updateRenderElement(
+      el,
+      html,
+      title,
+      {
+        color: item.situationColor,
+        fontWeight: '800',
+        borderColor: item.situationColor,
+        background: CONFIG.colors.activeBg
+      },
+      signature
+    );
   }
 
   function createPanel() {
@@ -1016,12 +1100,33 @@
     const urgentCount = waitingItems.filter(item => item.isUrgentTop).length;
 
     summaryEl.innerHTML =
-      `診察待 <b>${topItems.length}</b>名表示 / 全<b>${waitingItems.length}</b>名` +
-      (examCount ? `　<span style="color:${CONFIG.colors.examiningStatus};font-weight:700;">診察中${examCount}名</span>` : '') +
+      `<span style="color:${CONFIG.colors.examiningStatus};font-weight:800;">診察中${examCount}名</span>` +
+      `　診察待 <b>${topItems.length}</b>名表示 / 全<b>${waitingItems.length}</b>名` +
       (urgentCount ? `　<span style="color:${CONFIG.colors.urgentTopBorder};font-weight:800;">緊急対応群${urgentCount}名</span>` : '') +
       `　<span style="font-weight:700;color:${uiState.sortEnabled ? CONFIG.colors.sortOn : CONFIG.colors.sortOff};">${uiState.sortEnabled ? '本表ソート中' : '本表通常順'}</span>`;
 
-    if (!topItems.length) {
+    let html = '';
+
+    if (examiningItems.length) {
+      html += examiningItems.map((item) => {
+        const name = item.patientNameText || `患者番号 ${item.patientNoText || ''}`;
+        return `
+          <div
+            title="${escapeHtml(`状態:${item.statusText}\n診療科:${item.departmentText}\n医師:${item.doctorText}`)}"
+            style="margin-bottom:8px;padding:10px;border:1px solid ${item.situationColor};border-radius:10px;background:${CONFIG.colors.activeBg};">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="display:inline-block;padding:2px 7px;border-radius:999px;background:#ccfbf1;color:${item.situationColor};font-weight:900;font-size:12px;">診察中</span>
+              <span style="font-weight:800;color:#111827;">${escapeHtml(name)}</span>
+            </div>
+            <div style="margin-top:4px;font-size:12px;color:${item.situationColor};font-weight:800;">ー${escapeHtml(item.situationText || '診察中')}ー</div>
+            <div style="margin-top:4px;font-size:12px;color:#111827;">${escapeHtml(item.departmentText || '')}</div>
+            <div style="margin-top:4px;font-size:12px;color:#374151;">${item.patientNoText ? `ID:${escapeHtml(item.patientNoText)}` : ''}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    if (!topItems.length && !examiningItems.length) {
       listEl.innerHTML = `
         <div style="padding:14px 10px;border:1px dashed ${CONFIG.colors.border};border-radius:10px;background:#fff;color:#6b7280;font-size:13px;">
           対象患者はいません
@@ -1030,7 +1135,7 @@
       return;
     }
 
-    listEl.innerHTML = topItems.map((item, idx) => {
+    html += topItems.map((item, idx) => {
       const rank = idx + 1;
       const rankColor = getRankColor(rank, item.isUrgentTop);
       const rankBg = getRankBadgeBg(rank, item.isUrgentTop);
@@ -1063,6 +1168,37 @@
         </div>
       `;
     }).join('');
+
+    listEl.innerHTML = html;
+  }
+
+  // V3.8.2: 直近のユーザー操作時刻（ちらつき対策の中核）
+  let lastUserActivityAt = 0;
+  // V3.8.2: 自前 DOM 操作中は MutationObserver の発火を抑制
+  let isApplyingDom = false;
+  // V3.8.2: 操作中で延期されたソートがあるか
+  let pendingDeferredSort = false;
+
+  function markUserActivity() {
+    lastUserActivityAt = Date.now();
+  }
+
+  function userIsInteracting() {
+    return (Date.now() - lastUserActivityAt) < CONFIG.userActivityIdleMs;
+  }
+
+  // 行を含むスクロール可能な祖先要素を返す
+  function findScrollContainer(el) {
+    let cur = el && el.parentElement;
+    while (cur && cur !== document.body) {
+      const style = window.getComputedStyle(cur);
+      const oy = style.overflowY;
+      if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight) {
+        return cur;
+      }
+      cur = cur.parentElement;
+    }
+    return null;
   }
 
   function applySortToTable(table, waitingItems, examiningItems) {
@@ -1091,32 +1227,183 @@
 
     for (const row of untouchedRows) {
       if (!inserted) {
-        finalRows.push(...waitingSortedRows);
         finalRows.push(...examiningRows);
+        finalRows.push(...waitingSortedRows);
         inserted = true;
       }
       finalRows.push(row);
     }
 
     if (!inserted) {
-      finalRows.push(...waitingSortedRows);
       finalRows.push(...examiningRows);
+      finalRows.push(...waitingSortedRows);
     }
 
+    // 重複排除
     const seen = new Set();
-    finalRows.forEach(row => {
-      if (!row || seen.has(row)) return;
-      seen.add(row);
-      tbody.appendChild(row);
-    });
+    const uniqueFinal = [];
+    for (const r of finalRows) {
+      if (!r || seen.has(r)) continue;
+      seen.add(r);
+      uniqueFinal.push(r);
+    }
+
+    // ===== V3.8.2 追加: 差分チェック =====
+    // 既に同じ並びなら DOM 操作をスキップ（=ちらつき源を断つ）
+    if (allRows.length === uniqueFinal.length) {
+      let same = true;
+      for (let i = 0; i < allRows.length; i++) {
+        if (allRows[i] !== uniqueFinal[i]) { same = false; break; }
+      }
+      if (same) return;
+    }
+
+    // ===== V3.8.2 追加: ユーザー操作中はソート延期 =====
+    // クリック/フォーカス/ホイール直後はテーブルを動かさない
+    if (userIsInteracting()) {
+      if (!pendingDeferredSort) {
+        pendingDeferredSort = true;
+        window.setTimeout(() => {
+          pendingDeferredSort = false;
+          updateOnce();
+        }, CONFIG.deferredSortRetryMs);
+      }
+      return;
+    }
+
+    // ===== V3.8.2 追加: フォーカス & スクロール保持 =====
+    const activeEl = document.activeElement;
+    const activeInTable = activeEl && tbody.contains(activeEl) ? activeEl : null;
+    let savedSelStart = null, savedSelEnd = null;
+    if (activeInTable) {
+      try {
+        if ('selectionStart' in activeInTable) savedSelStart = activeInTable.selectionStart;
+        if ('selectionEnd' in activeInTable) savedSelEnd = activeInTable.selectionEnd;
+      } catch (e) { /* 無視 */ }
+    }
+    const scrollContainer = findScrollContainer(tbody) || document.scrollingElement || document.documentElement;
+    const savedScrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
+    const savedScrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+
+    // ===== V3.8.2 追加: DocumentFragment でまとめて移動（リフロー1回に集約） =====
+    isApplyingDom = true;
+    try {
+      const frag = document.createDocumentFragment();
+      uniqueFinal.forEach(r => frag.appendChild(r));
+      tbody.appendChild(frag);
+    } finally {
+      // 次フレームでフラグを解除（Observer の microtask 後に確実に false へ）
+      window.requestAnimationFrame(() => { isApplyingDom = false; });
+    }
+
+    // フォーカス復元
+    if (activeInTable && document.activeElement !== activeInTable) {
+      try {
+        activeInTable.focus({ preventScroll: true });
+        if (savedSelStart != null && typeof activeInTable.setSelectionRange === 'function') {
+          activeInTable.setSelectionRange(savedSelStart, savedSelEnd != null ? savedSelEnd : savedSelStart);
+        }
+      } catch (e) { /* 無視 */ }
+    }
+    // スクロール位置復元
+    if (scrollContainer) {
+      if (scrollContainer.scrollTop !== savedScrollTop) scrollContainer.scrollTop = savedScrollTop;
+      if (scrollContainer.scrollLeft !== savedScrollLeft) scrollContainer.scrollLeft = savedScrollLeft;
+    }
+  }
+
+  function isBridgeFrontWaitingItem(item) {
+    return item &&
+      item.mode === 'waiting' &&
+      normalizeCompareText(item.situationText) === normalizeCompareText('受付前で待機');
+  }
+
+  function isBridgeMiddleWaitingItem(item) {
+    return item &&
+      item.mode === 'waiting' &&
+      normalizeCompareText(item.situationText) === normalizeCompareText('中待合で待機');
+  }
+
+  function isBridgeReturnGroupItem(item) {
+    if (!item || item.mode !== 'waiting') return false;
+
+    const dep = normalizeCompareText(item.departmentText || '');
+    const status = normalizeCompareText(item.statusText || '');
+    const memo = `${item.receptionMemoText || ''}\n${item.patientMemoText || ''}`;
+
+    if (dep === normalizeCompareText('中待合') || dep === normalizeCompareText('中待合室')) {
+      return true;
+    }
+
+    if (status.includes(normalizeCompareText('再診待')) || status.includes(normalizeCompareText('検査戻り'))) {
+      return true;
+    }
+
+    if (/(リハ後|リハ戻り|レントゲン後|XP後|RX後|撮影後|検査戻り)/.test(memo)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function buildBridgePayload(waitingItems, examiningItems) {
+    const frontWaitingItems = waitingItems.filter(isBridgeFrontWaitingItem);
+    const middleWaitingItems = waitingItems.filter(isBridgeMiddleWaitingItem);
+    const returnGroupItems = waitingItems.filter(isBridgeReturnGroupItem);
+
+    return {
+      version: '1.1.0',
+      source: 'Res.Prio.sys.V3.6',
+      writtenAt: new Date().toISOString(),
+      counts: {
+        frontWaiting: frontWaitingItems.length,
+        frontWaitingTarget: 6,
+        middleWaiting: middleWaitingItems.length,
+        middleWaitingTarget: 3,
+        returnGroup: returnGroupItems.length,
+        examining: examiningItems.length,
+        waitingTotal: waitingItems.length
+      },
+      patients: {
+        frontWaiting: frontWaitingItems.map(item => ({
+          patientNo: item.patientNoText || '',
+          patientName: item.patientNameText || '',
+          department: item.departmentText || '',
+          status: item.statusText || '',
+          situation: item.situationText || ''
+        })),
+        middleWaiting: middleWaitingItems.map(item => ({
+          patientNo: item.patientNoText || '',
+          patientName: item.patientNameText || '',
+          department: item.departmentText || '',
+          status: item.statusText || '',
+          situation: item.situationText || ''
+        })),
+        returnGroup: returnGroupItems.map(item => ({
+          patientNo: item.patientNoText || '',
+          patientName: item.patientNameText || '',
+          department: item.departmentText || '',
+          status: item.statusText || '',
+          situation: item.situationText || ''
+        }))
+      }
+    };
+  }
+
+  function writeBridgePayload(payload) {
+    try {
+      localStorage.setItem(CONFIG.bridgeStorageKey, JSON.stringify(payload));
+    } catch (e) {
+      console.warn('Bridge payload write failed:', e);
+    }
   }
 
   function updateOnce() {
     const table = findMainTable();
-    if (!table) return;
+    if (!table) return false;
 
     const cols = pickColumns(table);
-    if (cols.status < 0 || (cols.patientMemo < 0 && cols.receptionMemo < 0) || cols.patientNo < 0 || cols.department < 0) return;
+    if (cols.status < 0 || (cols.patientMemo < 0 && cols.receptionMemo < 0) || cols.patientNo < 0 || cols.department < 0) return false;
 
     const now = new Date();
     const waitingItems = [];
@@ -1142,7 +1429,6 @@
 
     if (uiState.navEnabled) {
       applySortToTable(table, waitingItems, examiningItems);
-      clearAllOldRenders(table, cols);
 
       waitingItems.forEach((item, idx) => {
         renderWaitingRow(item, idx + 1);
@@ -1155,19 +1441,25 @@
       clearAllOldRenders(table, cols);
     }
 
+    const bridgePayload = buildBridgePayload(waitingItems, examiningItems);
+    writeBridgePayload(bridgePayload);
+
     renderPanel(waitingItems, examiningItems);
     cleanupMissingRows(seenPatientNos);
+    return true;
   }
 
   let scheduled = false;
   let lastGlobalGcAt = 0;
+  let initCompleted = false;
 
   function scheduleUpdate() {
     if (scheduled) return;
     scheduled = true;
     window.setTimeout(() => {
       scheduled = false;
-      updateOnce();
+      // V3.8.2: 描画タイミングをブラウザの paint cycle に合わせる
+      window.requestAnimationFrame(() => updateOnce());
     }, CONFIG.tableScanDebounceMs);
   }
 
@@ -1179,15 +1471,71 @@
     }
   }
 
-  const observer = new MutationObserver(scheduleUpdate);
-  observer.observe(document.body, { childList: true, subtree: true });
+  function waitForTableAndInit(retry = 0) {
+    const ok = updateOnce();
+    if (ok) {
+      initCompleted = true;
+      return;
+    }
+    if (retry < CONFIG.initialRetryMax) {
+      window.setTimeout(() => waitForTableAndInit(retry + 1), CONFIG.initialRetryIntervalMs);
+    }
+  }
 
-  cleanupOldDatePrefixes();
-  createPanel();
-  updateOnce();
+  function startObserversWhenReady() {
+    const start = () => {
+      // ===== V3.8.2: ユーザー操作トラッカー =====
+      // 操作中はソートを延期し、フォーカス/クリック損失を防ぐ
+      const activityEvents = ['mousedown', 'mouseup', 'click', 'dblclick', 'keydown', 'keyup', 'wheel', 'touchstart', 'touchmove', 'focusin', 'dragstart'];
+      activityEvents.forEach(ev => {
+        document.addEventListener(ev, markUserActivity, { capture: true, passive: true });
+      });
 
-  window.setInterval(() => {
-    periodicHouseKeeping();
-    updateOnce();
-  }, CONFIG.refreshIntervalMs);
+      // ===== V3.8.2: Observer のフィードバックループ抑制 =====
+      const observer = new MutationObserver((mutations) => {
+        // 自前 DOM 操作中の発火はスキップ
+        if (isApplyingDom) return;
+        // 全変更が「自前の描画要素 (renderClass) のみ」なら無視
+        const allOurs = mutations.every(m => {
+          const checkNode = (n) => {
+            if (!n || n.nodeType !== 1) return false;
+            const cls = n.classList;
+            if (cls && cls.contains(CONFIG.renderClass)) return true;
+            // フローティングパネル自身も自前
+            if (n.id === CONFIG.panelId) return true;
+            if (n.closest && n.closest(`.${CONFIG.renderClass}, #${CONFIG.panelId}`)) return true;
+            return false;
+          };
+          for (const n of m.addedNodes) { if (!checkNode(n)) return false; }
+          for (const n of m.removedNodes) { if (!checkNode(n)) return false; }
+          if (m.type === 'attributes' || m.type === 'characterData') {
+            return checkNode(m.target);
+          }
+          return true;
+        });
+        if (allOurs) return;
+        scheduleUpdate();
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      cleanupOldDatePrefixes();
+      createPanel();
+      waitForTableAndInit();
+
+      window.setInterval(() => {
+        periodicHouseKeeping();
+        // V3.8.2: 操作中は定期更新もスキップ（次回 1 秒後に持ち越し）
+        if (userIsInteracting()) return;
+        updateOnce();
+      }, CONFIG.refreshIntervalMs);
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', start, { once: true });
+    } else {
+      start();
+    }
+  }
+
+  startObserversWhenReady();
 })();
