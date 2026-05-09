@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Res.Prio.sys.V3.8.2
+// @name         Res.Prio.sys.V3.8.3
 // @namespace    https://digikar.jp/reception/
-// @version      3.8.2
-// @description  診察順ナビ 上位表示パネル版。【V3.8.2】受付画面のちらつき対策(差分ソート/操作中スキップ/Observerループ防止/フォーカス＆スクロール保持)。Bridge V1 互換。
+// @version      3.8.3
+// @description  診察順ナビ 上位表示パネル版。【V3.8.2】受付画面のちらつき対策(差分ソート/操作中スキップ/Observerループ防止/フォーカス＆スクロール保持)。Bridge V1 互換。🍐予約なし診察希望タグありの場合、表示上も予予約外とする
 // @match        https://digikar.jp/reception/*
 // @match        https://*.digikar.jp/reception/*
 // @run-at       document-start
@@ -96,6 +96,7 @@
     urgentKeywords: ['救急', '倒れ', '気分不良', '出血', '啼泣', '動けない', '歩行不可', '処置室', '激痛', 'しびれ急増'],
     complaintKeywords2: ['クレーム', '怒', '不満強い', '大声', '要注意'],
     complaintKeywords3: ['🔥', '激怒', '暴言', 'トラブル', '強いクレーム'],
+    noAppointmentExamTags: ['🍐予約無し診察希望', '🍐予約なし診察希望'],
 
     colors: {
       top1: '#b91c1c',
@@ -616,7 +617,9 @@
     }
 
     const arrivalParsed = parseHHMM(arrivalText);
-    const reservedParsed = parseReservedTime(reservationText, receptionMemoText, patientMemoText);
+    const memoTextForTags = `${patientMemoText}\n${receptionMemoText}`;
+    const hasNoAppointmentExamTag = includesAny(memoTextForTags, CONFIG.noAppointmentExamTags);
+    const reservedParsed = hasNoAppointmentExamTag ? null : parseReservedTime(reservationText, receptionMemoText, patientMemoText);
     const arrivalAt = arrivalParsed ? todayAt(arrivalParsed.hh, arrivalParsed.mm) : null;
     const reservedAt = reservedParsed ? todayAt(reservedParsed.hh, reservedParsed.mm) : null;
     const nowMs = now.getTime();
@@ -655,7 +658,7 @@
 
     const currentWaitMin = currentWaitMs / 60000;
     const initial = isInitialVisit(initialText);
-    const joinedMemo = `${patientMemoText}\n${receptionMemoText}`;
+    const joinedMemo = memoTextForTags;
     const complaintLevel = countComplaintLevel(joinedMemo);
     const hasImaging = includesAny(joinedMemo, CONFIG.imagingKeywords);
     const isUrgent = includesAny(joinedMemo, CONFIG.urgentKeywords);
@@ -742,6 +745,7 @@
       statusText,
       reservationText,
       receptionMemoText,
+      hasNoAppointmentExamTag,
       hasReturnMemoText: String(receptionMemoText || '').includes('再帰あり'),
       patientMemoText,
       currentWaitMs,
@@ -794,7 +798,9 @@
 
     const rankColor = getRankColor(rank, item.isUrgentTop);
     const rankBadgeBg = getRankBadgeBg(rank, item.isUrgentTop);
-    const reservedStr = item.reservationText && item.reservationText !== '-' ? item.reservationText : '予約外';
+    const reservedStr = item.hasNoAppointmentExamTag
+      ? '予約外'
+      : (item.reservationText && item.reservationText !== '-' ? item.reservationText : '予約外');
     const currentWaitStr = formatDuration(item.currentWaitMs);
     const totalWaitStr = formatDuration(item.totalWaitMs);
     const currentWaitHtml = item.hasReturnMemoText
@@ -1139,7 +1145,9 @@
       const rank = idx + 1;
       const rankColor = getRankColor(rank, item.isUrgentTop);
       const rankBg = getRankBadgeBg(rank, item.isUrgentTop);
-      const reservedStr = item.reservationText && item.reservationText !== '-' ? item.reservationText : '予約外';
+      const reservedStr = item.hasNoAppointmentExamTag
+        ? '予約外'
+        : (item.reservationText && item.reservationText !== '-' ? item.reservationText : '予約外');
       const name = item.patientNameText || `患者番号 ${item.patientNoText || ''}`;
       const currentWaitStr = formatDuration(item.currentWaitMs);
       const totalWaitStr = formatDuration(item.totalWaitMs);
