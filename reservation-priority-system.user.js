@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Res.Prio.sys.V3.8.2
+// @name         Res.Prio.sys.V3.7.1
 // @namespace    https://digikar.jp/reception/
-// @version      3.8.2
-// @description  診察順ナビ 上位表示パネル版。【V3.8.2】受付画面のちらつき対策(差分ソート/操作中スキップ/Observerループ防止/フォーカス＆スクロール保持)。Bridge V1 互換。
+// @version      3.7.1
+// @description  診察順ナビ 上位表示パネル版。【V3.7.1】受付画面のちらつき対策(差分ソート/操作中スキップ/Observerループ防止/フォーカス＆スクロール保持)。Bridge V1 互換。🍐予約なし診察希望タグがある場合、リハ/物療予約時刻を診察予約として扱わず、予約なし診察としてスコアリング
 // @match        https://digikar.jp/reception/*
 // @match        https://*.digikar.jp/reception/*
 // @run-at       document-start
@@ -32,6 +32,7 @@
     panelTopN: 8,
 
     urgentTopTag: '🔴緊急対応群',
+    noAppointmentExamTag: '🍐予約なし診察希望',
     bridgeStorageKey: 'tmBridgeAutopilotFeedV1',
 
     headers: {
@@ -615,10 +616,12 @@
       return null;
     }
 
+    const joinedMemo = `${patientMemoText}\n${receptionMemoText}`;
+    const hasNoAppointmentExamTag = joinedMemo.includes(CONFIG.noAppointmentExamTag);
     const arrivalParsed = parseHHMM(arrivalText);
     const reservedParsed = parseReservedTime(reservationText, receptionMemoText, patientMemoText);
     const arrivalAt = arrivalParsed ? todayAt(arrivalParsed.hh, arrivalParsed.mm) : null;
-    const reservedAt = reservedParsed ? todayAt(reservedParsed.hh, reservedParsed.mm) : null;
+    const reservedAt = !hasNoAppointmentExamTag && reservedParsed ? todayAt(reservedParsed.hh, reservedParsed.mm) : null;
     const nowMs = now.getTime();
 
     if (trackableStatus) {
@@ -655,7 +658,6 @@
 
     const currentWaitMin = currentWaitMs / 60000;
     const initial = isInitialVisit(initialText);
-    const joinedMemo = `${patientMemoText}\n${receptionMemoText}`;
     const complaintLevel = countComplaintLevel(joinedMemo);
     const hasImaging = includesAny(joinedMemo, CONFIG.imagingKeywords);
     const isUrgent = includesAny(joinedMemo, CONFIG.urgentKeywords);
@@ -685,7 +687,7 @@
       }
     } else {
       base = initial ? CONFIG.score.walkInInitial : CONFIG.score.walkInRevisit;
-      baseLabel = initial ? '予約外初診' : '予約外再診';
+      baseLabel = hasNoAppointmentExamTag ? '予約なし診察' : (initial ? '予約外初診' : '予約外再診');
     }
 
     const waitScore = round1(currentWaitMin * CONFIG.score.waitPerMinute);
@@ -723,6 +725,7 @@
 
     const detailParts = [];
     if (isUrgentTop) detailParts.push('緊急対応群=無条件最優先');
+    if (hasNoAppointmentExamTag) detailParts.push(CONFIG.noAppointmentExamTag);
     detailParts.push(`${baseLabel}+${formatScore(base)}`);
     detailParts.push(`今回待+${formatScore(waitScore)}`);
     if (timePressureScore) detailParts.push(`圧+${formatScore(timePressureScore)}`);
