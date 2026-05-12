@@ -7,6 +7,8 @@
 // @match        https://*.digikar.jp/reception/*
 // @run-at       document-start
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/takadat2003-maker/digikar-userscripts/main/reservation-priority-system.user.js
+// @downloadURL  https://raw.githubusercontent.com/takadat2003-maker/digikar-userscripts/main/reservation-priority-system.user.js
 // ==/UserScript==
 
 (function () {
