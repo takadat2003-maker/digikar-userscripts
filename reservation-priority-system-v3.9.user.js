@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Res.Prio.sys.V3.9.0
+// @name         Res.Prio.sys.V3.9.11
 // @namespace    https://digikar.jp/reception/
-// @version      3.9.0
-// @description  診察順ナビ 上位表示パネル版。【V3.9.0】端末間一致修正: 患者状態のlocalStorage依存を除去し、テーブルデータ(到着時刻)のみで待ち時間・スコアを計算。全端末で同一結果を保証。V3.8.2のちらつき対策・Bridge V1互換・🍐予約なし診察希望対応は維持。
+// @version      3.9.11
+// @description  診察順ナビ 上位表示パネル版。【V3.9.11】患者メモ/受付メモへの反応アルゴリズムのうち、安全語(urgentKeywords、+1000)・クレーム語(complaintKeywords2/3、💢絵文字、+10/20/30)・画像準備語(imagingKeywords、初診限定+3)の3種類を廃止。スコアは基礎スコア(base)＋待ち加点(waitScore)＋時間圧(timePressureScore)＋🟡待機治療群(+20)のみで構成される。🔴緊急対応群(受付メモタグによる無条件最上位固定)は別ロジックのため維持。V3.9.10のリスト表示サイズ復元、V3.9.9の再帰群(returnGroup)判定廃止、V3.9.8の検査中(examiningTest、科を問わず)カウント追加、V3.9.6の予約時刻フォールバック解析廃止、V3.9.5の🟡待機治療群タグ判定、V3.9.3のBridging Autopilot高さ追従修正、V3.9.0の端末間一致修正、V3.8.2のちらつき対策・Bridge V1互換・🍐予約なし診察希望対応は維持。
 // @match        https://digikar.jp/reception/*
 // @match        https://*.digikar.jp/reception/*
 // @updateURL    https://raw.githubusercontent.com/takadat2003-maker/digikar-userscripts/main/reservation-priority-system-v3.9.user.js
@@ -32,6 +32,10 @@
     uiStorageKey: 'tmPriorityUiStateV36',
     panelId: 'tm-priority-floating-panel-v36',
     panelTopN: 8,
+
+    // V3.9.1: パネル高さをBridging Autopilot V4.2cの実表示高さに合わせる
+    bridgePanelId: 'tm-bridging-autopilot-v4',
+    panelBodyMaxHeightFallback: '70vh',
 
     urgentTopTag: '🔴緊急対応群',
     bridgeStorageKey: 'tmBridgeAutopilotFeedV1',
@@ -64,7 +68,7 @@
       '予約なし診察（受付前待ち）'
     ],
 
-    doctorTimeRegex: /(院長|担当医|医師)?\s*[（(]?\s*(\d{1,2})\s*:\s*(\d{2})\s*[)）]?/,
+    // V3.9.6: doctorTimeRegex(受付メモ内のドクター担当枠表記からの予約時刻フォールバック解析)は誤検知のため廃止
     anyTimeRegex: /(\d{1,2})\s*:\s*(\d{2})/,
 
     score: {
@@ -78,26 +82,14 @@
       overduePerMinute: 0.6,
       sameSlotSoonBonus: 10,
       nextSlotSoonBonus: 5,
-      shortVisitStrong: 15,
-      shortVisitWeak: 10,
-      complaint1: 10,
-      complaint2: 20,
-      complaint3: 30,
-      safetyUrgent: 1000,
-      imagingReadyBonus: 3
+      waitingTreatmentGroupBonus: 20
     },
 
-    shortVisitKeywordsStrong: [
-      '注射のみ', '処方のみ', '結果説明のみ', '書類のみ', 'brief', 'クイック', '短時間', 'リハ後診察のみ'
-    ],
-    shortVisitKeywordsWeak: [
-      '注射', '処方', '結果説明', '薬のみ', '物療のみ', 'リハのみ', '再チェックのみ'
-    ],
+    waitingTreatmentGroupTag: '🟡待機治療群',
 
-    imagingKeywords: ['🌈', 'RX', 'ＲＸ', 'Xp', 'XP', 'ＸＰ', 'レントゲン', '骨密度', '撮影'],
-    urgentKeywords: ['救急', '倒れ', '気分不良', '出血', '啼泣', '動けない', '歩行不可', '処置室', '激痛', 'しびれ急増'],
-    complaintKeywords2: ['クレーム', '怒', '不満強い', '大声', '要注意'],
-    complaintKeywords3: ['🔥', '激怒', '暴言', 'トラブル', '強いクレーム'],
+    // V3.9.11: 安全語(urgentKeywords/safetyUrgent)・クレーム語(complaintKeywords2/3/complaint1-3)・
+    // 画像準備語(imagingKeywords/imagingReadyBonus)によるメモ反応スコアリングを廃止したため、
+    // 該当キーワードリストと得点定数を削除。
     noAppointmentExamTags: ['🍐予約無し診察希望', '🍐予約なし診察希望'],
 
     colors: {
@@ -189,16 +181,6 @@
     return keywords.some(keyword => String(text || '').includes(keyword));
   }
 
-  function countComplaintLevel(text) {
-    const source = String(text || '');
-    if (!source) return 0;
-    const explicitCount = (source.match(/💢/g) || []).length;
-    if (includesAny(source, CONFIG.complaintKeywords3)) return 3;
-    if (explicitCount >= 2 || includesAny(source, CONFIG.complaintKeywords2)) return 2;
-    if (explicitCount >= 1) return 1;
-    return 0;
-  }
-
   function isInitialVisit(initialText) {
     return String(initialText || '').trim() !== '';
   }
@@ -214,6 +196,12 @@
 
   function isExaminingStatus(statusText) {
     return normalizeCompareText(statusText) === normalizeCompareText('診察中');
+  }
+
+  // V3.9.8: 「検査中」は診察中（1診/2診で医師が診察中）とは別概念。
+  // Bridging Autopilotの目標人数判定に合算するため、科を問わず全行から拾えるようにする。
+  function isExaminingTestStatus(statusText) {
+    return normalizeCompareText(statusText) === normalizeCompareText('検査中');
   }
 
   function getPatientSituation(departmentText, statusText) {
@@ -282,8 +270,8 @@
   }
 
   function clampPanelPosition(state, panelEl) {
-    const width = panelEl ? panelEl.offsetWidth : 410;
-    const headerHeight = 48;
+    const width = panelEl ? panelEl.offsetWidth : 273;
+    const headerHeight = 26;
     const maxLeft = Math.max(0, window.innerWidth - width - 4);
     const maxTop = Math.max(0, window.innerHeight - headerHeight - 4);
 
@@ -294,6 +282,37 @@
       sortEnabled: !!state.sortEnabled && !!state.navEnabled,
       navEnabled: !!state.navEnabled
     };
+  }
+
+  // V3.9.1: パネル全体の高さを Bridging Autopilot V4.2c パネルの実測高さに追従させる。
+  // 両スクリプトは同一ページ上で同時に動作するため、対象パネルの getBoundingClientRect()
+  // をそのまま基準にすれば、環境依存のフォント/UAスタイル差を気にせず正確に一致させられる。
+  // 対象パネルが見つからない場合（未導入・未起動時）は従来の70vh上限にフォールバックする。
+  function syncPanelBodyHeightWithBridge(panel) {
+    if (!panel) return;
+    const header = panel.querySelector('.tm-panel-header');
+    const body = panel.querySelector('.tm-panel-body');
+    if (!header || !body) return;
+
+    const bridgeEl = document.getElementById(CONFIG.bridgePanelId);
+    const bridgeHeight = bridgeEl ? bridgeEl.getBoundingClientRect().height : 0;
+
+    if (bridgeEl && bridgeHeight > 0) {
+      const headerHeight = header.getBoundingClientRect().height;
+      const targetBodyHeight = Math.max(0, Math.round(bridgeHeight - headerHeight));
+      const targetPx = `${targetBodyHeight}px`;
+      // V3.9.3: max-height はコンテンツが短いと縮んでしまう「上限」でしかないため、
+      // 常に同じ高さになるよう height を固定値として指定する（コンテンツが少ない時は余白ができる）。
+      if (body.style.height !== targetPx) {
+        body.style.maxHeight = 'none';
+        body.style.height = targetPx;
+        body.style.overflowY = 'auto';
+      }
+    } else if (body.style.maxHeight !== CONFIG.panelBodyMaxHeightFallback) {
+      body.style.height = 'auto';
+      body.style.maxHeight = CONFIG.panelBodyMaxHeightFallback;
+      body.style.overflowY = 'auto';
+    }
   }
 
   function findMainTable() {
@@ -367,18 +386,11 @@
     return String(tds[idx].textContent || '').replace(/\u00a0/g, ' ').trim();
   }
 
-  function parseReservedTime(reservationText, receptionMemoText, patientMemoText) {
-    const direct = parseHHMM(reservationText);
-    if (direct) return direct;
-
-    const joined = `${receptionMemoText || ''}\n${patientMemoText || ''}`;
-    let m = joined.match(CONFIG.doctorTimeRegex);
-    if (m) return { hh: Number(m[2]), mm: Number(m[3]) };
-
-    m = joined.match(CONFIG.anyTimeRegex);
-    if (m) return { hh: Number(m[1]), mm: Number(m[2]) };
-
-    return null;
+  // V3.9.6: 受付メモ/患者メモに書かれた「整形外科（院長11:30）」等はドクターの担当枠の
+  // 注記であり患者個人の予約時刻ではないため、メモ文からの時刻フォールバック解析を廃止。
+  // 予約時刻は「予約」列の値のみを正とする（無ければ予約なし=予約外として扱う）。
+  function parseReservedTime(reservationText) {
+    return parseHHMM(reservationText);
   }
 
   function removeRender(cell) {
@@ -494,7 +506,7 @@
     const arrivalParsed = parseHHMM(arrivalText);
     const memoTextForTags = `${patientMemoText}\n${receptionMemoText}`;
     const hasNoAppointmentExamTag = includesAny(memoTextForTags, CONFIG.noAppointmentExamTags);
-    const reservedParsed = hasNoAppointmentExamTag ? null : parseReservedTime(reservationText, receptionMemoText, patientMemoText);
+    const reservedParsed = hasNoAppointmentExamTag ? null : parseReservedTime(reservationText);
     const arrivalAt = arrivalParsed ? todayAt(arrivalParsed.hh, arrivalParsed.mm) : null;
     const reservedAt = reservedParsed ? todayAt(reservedParsed.hh, reservedParsed.mm) : null;
     const nowMs = now.getTime();
@@ -526,12 +538,11 @@
 
     const waitMin = waitMs / 60000;
     const initial = isInitialVisit(initialText);
-    const joinedMemo = memoTextForTags;
-    const complaintLevel = countComplaintLevel(joinedMemo);
-    const hasImaging = includesAny(joinedMemo, CONFIG.imagingKeywords);
-    const isUrgent = includesAny(joinedMemo, CONFIG.urgentKeywords);
-    const hasShortStrong = includesAny(joinedMemo, CONFIG.shortVisitKeywordsStrong);
-    const hasShortWeak = !hasShortStrong && includesAny(joinedMemo, CONFIG.shortVisitKeywordsWeak);
+    // V3.9.11: 安全語・クレーム語・画像準備語によるjoinedMemo反応スコアリングは廃止したため、
+    // memoTextForTagsは🍐タグ判定(hasNoAppointmentExamTag)専用として残す。
+    // V3.9.4: 短時間ボーナス(強/弱キーワード)を廃止し、「🟡待機治療群」タグ判定に置き換え
+    // V3.9.5: 実運用でこのタグは受付メモ欄に入力されるため、判定対象を患者メモ→受付メモに変更
+    const hasWaitingTreatmentGroupTag = String(receptionMemoText || '').includes(CONFIG.waitingTreatmentGroupTag);
 
     const slotMin = initial ? 10 : 5;
     const untilReservedMin = reservedAt ? (reservedAt.getTime() - nowMs) / 60000 : null;
@@ -572,35 +583,16 @@
       }
     }
 
-    let shortBonus = 0;
-    if (hasShortStrong) {
-      shortBonus = CONFIG.score.shortVisitStrong;
-    } else if (hasShortWeak) {
-      shortBonus = CONFIG.score.shortVisitWeak;
-    }
+    const waitingTreatmentGroupBonus = hasWaitingTreatmentGroupTag ? CONFIG.score.waitingTreatmentGroupBonus : 0;
 
-    let complaintScore = 0;
-    if (complaintLevel === 1) complaintScore = CONFIG.score.complaint1;
-    if (complaintLevel === 2) complaintScore = CONFIG.score.complaint2;
-    if (complaintLevel >= 3) complaintScore = CONFIG.score.complaint3;
-
-    let imagingBonus = 0;
-    if (initial && hasImaging) {
-      imagingBonus = CONFIG.score.imagingReadyBonus;
-    }
-
-    const safetyScore = isUrgent ? CONFIG.score.safetyUrgent : 0;
-    const totalScore = base + waitScore + timePressureScore + shortBonus + complaintScore + imagingBonus + safetyScore;
+    const totalScore = base + waitScore + timePressureScore + waitingTreatmentGroupBonus;
 
     const detailParts = [];
     if (isUrgentTop) detailParts.push('緊急対応群=無条件最優先');
     detailParts.push(`${baseLabel}+${formatScore(base)}`);
     detailParts.push(`待ち+${formatScore(waitScore)}`);
     if (timePressureScore) detailParts.push(`圧+${formatScore(timePressureScore)}`);
-    if (shortBonus) detailParts.push(`短時間+${formatScore(shortBonus)}`);
-    if (complaintScore) detailParts.push(`💢+${formatScore(complaintScore)}`);
-    if (imagingBonus) detailParts.push(`画像+${formatScore(imagingBonus)}`);
-    if (safetyScore) detailParts.push(`安全+${formatScore(safetyScore)}`);
+    if (waitingTreatmentGroupBonus) detailParts.push(`🟡待機治療+${formatScore(waitingTreatmentGroupBonus)}`);
 
     return {
       mode: 'waiting',
@@ -769,24 +761,24 @@
     panel.style.maxWidth = 'calc(100vw - 8px)';
     panel.style.background = CONFIG.colors.panelBg;
     panel.style.border = `1px solid ${CONFIG.colors.border}`;
-    panel.style.borderRadius = '12px';
+    panel.style.borderRadius = '8px';
     panel.style.boxShadow = CONFIG.colors.panelShadow;
     panel.style.backdropFilter = 'blur(3px)';
     panel.style.overflow = 'hidden';
     panel.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 
     panel.innerHTML = `
-      <div class="tm-panel-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:${CONFIG.colors.panelHeader};color:#fff;cursor:move;user-select:none;">
-        <div style="display:flex;align-items:center;gap:8px;min-width:0;">
-          <span style="font-size:15px;font-weight:900;white-space:nowrap;">診察順ナビ</span>
+      <div class="tm-panel-header" style="display:flex;align-items:center;justify-content:space-between;padding:4px 7px;background:${CONFIG.colors.panelHeader};color:#fff;cursor:move;user-select:none;">
+        <div style="display:flex;align-items:center;gap:5px;min-width:0;">
+          <span style="font-size:12px;font-weight:900;white-space:nowrap;">診察順ナビ V3.9.11</span>
         </div>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <button type="button" class="tm-panel-nav-btn" title="ナビON/OFF" style="border:none;border-radius:8px;padding:4px 8px;background:rgba(255,255,255,0.18);color:#fff;font-size:12px;font-weight:800;cursor:pointer;">NAV ON</button>
-          <button type="button" class="tm-panel-sort-btn" title="ソートON/OFF" style="border:none;border-radius:8px;padding:4px 8px;background:rgba(255,255,255,0.18);color:#fff;font-size:12px;font-weight:800;cursor:pointer;">SORT OFF</button>
-          <button type="button" class="tm-panel-min-btn" title="最小化/展開" style="border:none;border-radius:8px;padding:4px 8px;background:rgba(255,255,255,0.18);color:#fff;font-size:12px;font-weight:700;cursor:pointer;">−</button>
+        <div style="display:flex;gap:3px;align-items:center;">
+          <button type="button" class="tm-panel-nav-btn" title="ナビON/OFF" style="border:none;border-radius:5px;padding:1px 5px;background:rgba(255,255,255,0.18);color:#fff;font-size:10px;font-weight:800;cursor:pointer;line-height:1.5;">NAV ON</button>
+          <button type="button" class="tm-panel-sort-btn" title="ソートON/OFF" style="border:none;border-radius:5px;padding:1px 5px;background:rgba(255,255,255,0.18);color:#fff;font-size:10px;font-weight:800;cursor:pointer;line-height:1.5;">SORT OFF</button>
+          <button type="button" class="tm-panel-min-btn" title="最小化/展開" style="border:none;border-radius:5px;padding:1px 5px;background:rgba(255,255,255,0.18);color:#fff;font-size:10px;font-weight:700;cursor:pointer;line-height:1.5;">−</button>
         </div>
       </div>
-      <div class="tm-panel-body" style="padding:10px 10px 12px 10px;max-height:70vh;overflow:auto;background:${CONFIG.colors.panelBg};">
+      <div class="tm-panel-body" style="padding:10px 10px 12px 10px;max-height:${CONFIG.panelBodyMaxHeightFallback};overflow:auto;background:${CONFIG.colors.panelBg};">
         <div class="tm-panel-summary" style="font-size:12px;color:#374151;margin-bottom:8px;">診察待の上位患者を表示</div>
         <div class="tm-panel-list"></div>
       </div>
@@ -940,12 +932,14 @@
 
     window.addEventListener('resize', function () {
       applyUiStateToPanel(panel, loadUiState());
+      syncPanelBodyHeightWithBridge(panel);
     });
   }
 
   // V3.9.0: renderPanel — waitMs 統一版
-  function renderPanel(waitingItems, examiningItems) {
+  function renderPanel(waitingItems, examiningItems, examiningTestItems) {
     const panel = createPanel();
+    syncPanelBodyHeightWithBridge(panel);
     const listEl = panel.querySelector('.tm-panel-list');
     const summaryEl = panel.querySelector('.tm-panel-summary');
     if (!listEl || !summaryEl) return;
@@ -965,13 +959,15 @@
 
     const topItems = waitingItems.slice(0, CONFIG.panelTopN);
     const examCount = examiningItems.length;
+    const examTestCount = (examiningTestItems || []).length;
     const urgentCount = waitingItems.filter(item => item.isUrgentTop).length;
 
     summaryEl.innerHTML =
       `<span style="color:${CONFIG.colors.examiningStatus};font-weight:800;">診察中${examCount}名</span>` +
-      `　診察待 <b>${topItems.length}</b>名表示 / 全<b>${waitingItems.length}</b>名` +
-      (urgentCount ? `　<span style="color:${CONFIG.colors.urgentTopBorder};font-weight:800;">緊急対応群${urgentCount}名</span>` : '') +
-      `　<span style="font-weight:700;color:${uiState.sortEnabled ? CONFIG.colors.sortOn : CONFIG.colors.sortOff};">${uiState.sortEnabled ? '本表ソート中' : '本表通常順'}</span>`;
+      `　<span style="color:#7c3aed;font-weight:800;">検査中${examTestCount}名</span>` +
+      `　診察待 <b>${topItems.length}</b>/<b>${waitingItems.length}</b>名` +
+      (urgentCount ? `　<span style="color:${CONFIG.colors.urgentTopBorder};font-weight:800;">緊急${urgentCount}名</span>` : '') +
+      `　<span style="font-weight:700;color:${uiState.sortEnabled ? CONFIG.colors.sortOn : CONFIG.colors.sortOff};">${uiState.sortEnabled ? 'ソート中' : '通常順'}</span>`;
 
     let html = '';
 
@@ -988,7 +984,7 @@
             </div>
             <div style="margin-top:4px;font-size:12px;color:${item.situationColor};font-weight:800;">ー${escapeHtml(item.situationText || '診察中')}ー</div>
             <div style="margin-top:4px;font-size:12px;color:#111827;">${escapeHtml(item.departmentText || '')}</div>
-            <div style="margin-top:4px;font-size:12px;color:#374151;">${item.patientNoText ? `ID:${escapeHtml(item.patientNoText)}` : ''}</div>
+            ${item.patientNoText ? `<div style="margin-top:4px;font-size:12px;color:#374151;">ID:${escapeHtml(item.patientNoText)}</div>` : ''}
           </div>
         `;
       }).join('');
@@ -1025,9 +1021,9 @@
           </div>
           <div style="margin-top:4px;font-size:12px;color:${item.situationColor};font-weight:800;">ー${escapeHtml(item.situationText || '')}ー</div>
           <div style="margin-top:4px;font-size:12px;color:#111827;">${escapeHtml(item.departmentText || '')}</div>
-          <div style="margin-top:4px;font-size:12px;color:#7c3aed;font-weight:700;">⌚待ち${escapeHtml(waitStr)}</div>
           <div style="margin-top:4px;font-size:12px;color:#374151;">
-            予${escapeHtml(reservedStr)}
+            <span style="color:#7c3aed;font-weight:700;">⌚${escapeHtml(waitStr)}</span>
+            <span style="margin-left:8px;">予${escapeHtml(reservedStr)}</span>
             ${item.patientNoText ? `<span style="margin-left:8px;">ID:${escapeHtml(item.patientNoText)}</span>` : ''}
           </div>
         </div>
@@ -1186,43 +1182,26 @@
       normalizeCompareText(item.situationText) === normalizeCompareText('中待合で待機');
   }
 
-  function isBridgeReturnGroupItem(item) {
-    if (!item || item.mode !== 'waiting') return false;
+  // V3.9.9: 再帰群(isBridgeReturnGroupItem)は「中待合department」の判定条件が
+  // 中待合waitingItem(中待合+診察待)と重複しており、Bridging Autopilot側の表示が
+  // 二重カウントに見えて紛らわしいため廃止。Bridge payloadからも削除する。
 
-    const dep = normalizeCompareText(item.departmentText || '');
-    const status = normalizeCompareText(item.statusText || '');
-    const memo = `${item.receptionMemoText || ''}\n${item.patientMemoText || ''}`;
-
-    if (dep === normalizeCompareText('中待合') || dep === normalizeCompareText('中待合室')) {
-      return true;
-    }
-
-    if (status.includes(normalizeCompareText('再診待')) || status.includes(normalizeCompareText('検査戻り'))) {
-      return true;
-    }
-
-    if (/(リハ後|リハ戻り|レントゲン後|XP後|RX後|撮影後|検査戻り)/.test(memo)) {
-      return true;
-    }
-
-    return false;
-  }
-
-  function buildBridgePayload(waitingItems, examiningItems) {
+  function buildBridgePayload(waitingItems, examiningItems, examiningTestItems) {
     const frontWaitingItems = waitingItems.filter(isBridgeFrontWaitingItem);
     const middleWaitingItems = waitingItems.filter(isBridgeMiddleWaitingItem);
-    const returnGroupItems = waitingItems.filter(isBridgeReturnGroupItem);
+    const examTestItems = examiningTestItems || [];
 
     return {
-      version: '1.1.0',
-      source: 'Res.Prio.sys.V3.9.0',
+      version: '1.3.0',
+      source: 'Res.Prio.sys.V3.9.11',
       writtenAt: new Date().toISOString(),
       counts: {
         frontWaiting: frontWaitingItems.length,
         frontWaitingTarget: 6,
         middleWaiting: middleWaitingItems.length,
         middleWaitingTarget: 3,
-        returnGroup: returnGroupItems.length,
+        // V3.9.8: 検査中（科を問わず）の人数。Bridging AutopilotがmiddleWaitingと合算して目標人数判定に使う
+        examiningTest: examTestItems.length,
         examining: examiningItems.length,
         waitingTotal: waitingItems.length
       },
@@ -1241,12 +1220,12 @@
           status: item.statusText || '',
           situation: item.situationText || ''
         })),
-        returnGroup: returnGroupItems.map(item => ({
+        // V3.9.8: 検査中は科を問わないため situation は付与しない
+        examiningTest: examTestItems.map(item => ({
           patientNo: item.patientNoText || '',
           patientName: item.patientNameText || '',
           department: item.departmentText || '',
-          status: item.statusText || '',
-          situation: item.situationText || ''
+          status: item.statusText || ''
         }))
       }
     };
@@ -1270,11 +1249,24 @@
     const now = new Date();
     const waitingItems = [];
     const examiningItems = [];
+    // V3.9.8: 検査中は科を問わず全行から拾う（中待合の判定とは独立の集計）
+    const examiningTestItems = [];
     const uiState = loadUiState();
 
     table.querySelectorAll('tbody tr').forEach(row => {
       const tds = row.querySelectorAll('td');
       if (!tds || !tds.length) return;
+
+      const statusTextForTest = getCellText(tds, cols.status);
+      if (isExaminingTestStatus(statusTextForTest) &&
+          !CONFIG.inactiveStatusKeywords.some(keyword => String(statusTextForTest).includes(keyword))) {
+        examiningTestItems.push({
+          patientNoText: getCellText(tds, cols.patientNo),
+          patientNameText: getCellText(tds, cols.patientName),
+          departmentText: getCellText(tds, cols.department),
+          statusText: statusTextForTest
+        });
+      }
 
       const item = buildRowData(row, cols, now);
       if (!item) return;
@@ -1299,10 +1291,10 @@
       clearAllOldRenders(table, cols);
     }
 
-    const bridgePayload = buildBridgePayload(waitingItems, examiningItems);
+    const bridgePayload = buildBridgePayload(waitingItems, examiningItems, examiningTestItems);
     writeBridgePayload(bridgePayload);
 
-    renderPanel(waitingItems, examiningItems);
+    renderPanel(waitingItems, examiningItems, examiningTestItems);
     return true;
   }
 
