@@ -1,0 +1,200 @@
+(() => {
+  "use strict";
+
+  // ===== Config =====
+  const SCAN_PREFIX = "SCN:";
+  const PROCESS_LOCK_TIME = 800;
+
+  // ===== State =====
+  let mode = "manual"; // "manual" | "scanner"
+  let isEnabled = true;
+  let isProcessing = false;
+  let scannerBuffer = "";
+
+  // ===== DOM =====
+  const root = document.createElement("div");
+  root.id = "pointer-panel";
+  root.style.cssText = [
+    "position:fixed",
+    "right:16px",
+    "bottom:16px",
+    "z-index:999999",
+    "padding:12px",
+    "width:320px",
+    "background:#1f2937",
+    "color:#fff",
+    "border-radius:10px",
+    "box-shadow:0 8px 22px rgba(0,0,0,.28)",
+    "font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif",
+    "font-size:13px",
+  ].join(";");
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+      <strong style="font-size:13px;">Pointer V1</strong>
+      <button id="pointer-enable" type="button" style="padding:4px 8px;border:0;border-radius:6px;cursor:pointer;font-weight:700;">ON</button>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;">
+      <button id="pointer-mode-manual" type="button" style="flex:1;padding:6px 8px;border:0;border-radius:6px;cursor:pointer;font-weight:700;">MANUAL</button>
+      <button id="pointer-mode-scanner" type="button" style="flex:1;padding:6px 8px;border:0;border-radius:6px;cursor:pointer;font-weight:700;">SCANNER</button>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <input id="pointer-input" type="text" placeholder="SCN:123456" style="flex:1;padding:8px;border:1px solid #4b5563;border-radius:6px;outline:none;" />
+      <button id="pointer-run" type="button" style="padding:8px 10px;border:0;border-radius:6px;cursor:pointer;font-weight:700;">実行</button>
+    </div>
+    <div id="pointer-status" style="margin-top:8px;opacity:.9;min-height:1.2em;"></div>
+  `;
+
+  document.body.appendChild(root);
+
+  const inputBox = document.getElementById("pointer-input");
+  const runBtn = document.getElementById("pointer-run");
+  const enableBtn = document.getElementById("pointer-enable");
+  const manualBtn = document.getElementById("pointer-mode-manual");
+  const scannerBtn = document.getElementById("pointer-mode-scanner");
+  const statusBox = document.getElementById("pointer-status");
+
+  function setStatus(text) {
+    statusBox.textContent = text;
+  }
+
+  function normalizeScanText(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    return value.startsWith(SCAN_PREFIX) ? value : `${SCAN_PREFIX}${value}`;
+  }
+
+  // 既存要件: 二重送信防止 + PROCESS_LOCK_TIME + isProcessing を維持
+  function runWithLock(scanText) {
+    const normalized = normalizeScanText(scanText);
+    if (!normalized) return;
+    if (!isEnabled) return;
+    if (isProcessing) return;
+
+    isProcessing = true;
+    try {
+      processScan(normalized);
+      setStatus(`送信: ${normalized}`);
+    } finally {
+      window.setTimeout(() => {
+        isProcessing = false;
+      }, PROCESS_LOCK_TIME);
+    }
+  }
+
+  // 既存ロジック想定: DOM走査と鉛筆クリックをここで実行
+  function processScan(scanValue) {
+    // --- ここに既存の「DOM走査 + 鉛筆クリック」ロジックを置いてください ---
+    // 下記はサンプルログ（既存ロジック差し替え用）。
+    console.log("[Pointer] processScan:", scanValue);
+  }
+
+  function renderInputMirror(text) {
+    inputBox.value = text || "";
+  }
+
+  function setEnabled(flag) {
+    isEnabled = Boolean(flag);
+
+    enableBtn.textContent = isEnabled ? "ON" : "OFF";
+    enableBtn.style.background = isEnabled ? "#10b981" : "#ef4444";
+    enableBtn.style.color = "#fff";
+
+    if (!isEnabled) {
+      scannerBuffer = "";
+      if (mode === "scanner") renderInputMirror("");
+      setStatus("OFF: 入力停止中");
+    } else {
+      setStatus(mode === "manual" ? "manual: 入力可能" : "scanner: 受信待機");
+    }
+  }
+
+  function setMode(nextMode) {
+    if (nextMode !== "manual" && nextMode !== "scanner") return;
+    mode = nextMode;
+
+    const manualActive = mode === "manual";
+    manualBtn.style.background = manualActive ? "#2563eb" : "#374151";
+    manualBtn.style.color = "#fff";
+    scannerBtn.style.background = manualActive ? "#374151" : "#2563eb";
+    scannerBtn.style.color = "#fff";
+
+    // manual: ネイティブ入力を優先（強制focusは切替時のみ許可）
+    inputBox.readOnly = !manualActive;
+
+    if (manualActive) {
+      scannerBuffer = "";
+      setStatus(isEnabled ? "manual: 入力可能" : "OFF: 入力停止中");
+      // 毎回の強制focusはしない。モード切替時のみ任意で1回。
+      window.setTimeout(() => inputBox.focus(), 0);
+    } else {
+      renderInputMirror(scannerBuffer);
+      setStatus(isEnabled ? "scanner: 受信待機" : "OFF: 入力停止中");
+    }
+  }
+
+  function handleManualEnter(e) {
+    if (!isEnabled) return;
+    if (mode !== "manual") return;
+    if (e.key !== "Enter") return;
+
+    runWithLock(inputBox.value);
+    inputBox.select();
+  }
+
+  function handleScannerKeydown(e) {
+    if (!isEnabled) return;
+    if (mode !== "scanner") return;
+
+    // scannerモードのみグローバル受信
+    if (e.key === "Enter") {
+      const payload = scannerBuffer;
+      scannerBuffer = "";
+      renderInputMirror("");
+      runWithLock(payload);
+      return;
+    }
+
+    if (e.key === "Backspace") {
+      scannerBuffer = scannerBuffer.slice(0, -1);
+      renderInputMirror(scannerBuffer);
+      return;
+    }
+
+    // 直接追記はscannerモード限定
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      scannerBuffer += e.key;
+      renderInputMirror(scannerBuffer);
+    }
+  }
+
+  // ===== Events =====
+  enableBtn.addEventListener("click", () => setEnabled(!isEnabled));
+
+  manualBtn.addEventListener("click", () => setMode("manual"));
+  scannerBtn.addEventListener("click", () => setMode("scanner"));
+
+  runBtn.addEventListener("click", () => {
+    if (!isEnabled) return;
+    if (mode === "manual") {
+      runWithLock(inputBox.value);
+      inputBox.select();
+      return;
+    }
+
+    const payload = scannerBuffer;
+    scannerBuffer = "";
+    renderInputMirror("");
+    runWithLock(payload);
+  });
+
+  // manualモードの入力はinput自体で扱う（IME/Backspace/通常入力を壊さない）
+  inputBox.addEventListener("keydown", handleManualEnter);
+
+  // scannerモードのグローバル受信
+  document.addEventListener("keydown", handleScannerKeydown);
+
+  // 初期状態
+  setEnabled(true);
+  setMode("manual");
+})();
